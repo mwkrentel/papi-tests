@@ -1,0 +1,269 @@
+--------------------
+PAPI Overflow Tests
+--------------------
+
+$Id: README 278 2013-01-03 04:17:10Z krentel $
+
+This directory contains a set of PAPI acceptance tests.  These tests
+are not designed to replace or complement the test suite that comes
+with the PAPI distribution.
+
+Rather, these tests are designed to test certain specific features of
+PAPI and PAPI_overflow() that we in the Rice HPCToolkit group use to
+implement our sampling-based profiler.  We use PAPI_overflow() to
+deliver a stream of interrupts based on the hardware performance
+counters.  These tests verify that PAPI_overflow() delivers a
+consistent and reliable stream of interrupts for each process and
+thread, that the overflow handler is passed a valid program counter
+address, and that certain syscalls work correctly inside the overflow
+handler.
+
+These test programs are released under the 3-clause BSD license, see
+the file LICENSE for details.
+
+GIT:  git clone https://github.com/mwkrentel/papi-tests
+
+HPCToolkit:  http://hpctoolkit.org/
+PAPI:  http://icl.cs.utk.edu/papi/
+
+Mark W. Krentel
+Rice University
+krentel@rice.edu
+
+-------------------
+Building the Tests
+-------------------
+
+To build the tests, edit the Makefile for the PAPI location, CC
+compiler and CFLAGS, and then run 'make' or 'make all'.
+
+Notes: (1) Some non-gcc compilers have trouble with the asm statements
+in context.c, so you may need to compile that file with gcc, even if
+using a different compiler for the other files.
+
+(2) Keep the compiler optimization levels fairly low.  We want to
+trigger the performance counters, not make the program run fast, and
+we don't want the compiler to optimize out code that triggers events.
+
+(3) The option -mfpmath=sse is x86-64 specific.
+
+------------------
+Running the Tests
+------------------
+
+All of the tests will run with reasonable default values when given no
+arguments, although the defaults may not stress the system too much.
+In addition, most of the tests accept the following common options and
+arguments, although not every option applies to every program.  For
+example:
+
+./nonthread [-hm:o:p:qt:w:x:] [EVENT | EVENT:PERIOD] ...
+
+    -h
+        Print this usage message.
+
+    -m <num>
+        Size of array in Megabytes for the memory cache tests.  Must
+        be between 1 and 2000, or else 0 to disable the memory tests
+        (default 40).
+
+    -o <num>
+        The default overflow threshold (default 2000000).
+
+    -p <num>
+        The number of pthreads for the threads test (default 4).
+
+    -q
+        Set quiet mode, print less verbose output (default verbose).
+
+    -t <num>
+        Time to run the tests in seconds (default 60).
+
+    -w <num>
+        Amount of work per iteration (default 1000).  The unit of work
+        is arbitrary, but 1000 units takes roughly a few seconds.
+
+    -x <num>
+        Number of loop iterations in the overflow handler (default 50).
+        Only applies to the handler test.
+
+EVENT can be a PAPI preset event (eg, PAPI_TOT_CYC) or a native event
+(eg, UNHALTED_CORE_CYCLES).  PERIOD is the overflow threshold.  The
+delimiter between EVENT and PERIOD may be colon (:) or at-sign (@).
+
+Of course, which events are available for overflow is system dependent
+and not all events are available.  PAPI_TOT_CYC is a good place to
+start.
+
+The arguments to the tests below are their default values.
+
+------------------------
+Overflow Available Test
+------------------------
+
+  over-avail -o 100000 -t 30
+
+This test tries to generate interrupts for all of the non-derived
+(overflow eligible) PAPI presets.  It summarizes which events are
+available on the system, which events are overflow eligible, and for
+which events it was able to generate overflow interrupts.  A PAPI
+event 'Passes' if the test was able to generate interrupts for that
+event.
+
+Note: 'Failed' only means that this test failed to trigger overflows
+for that event, not necessarily that PAPI_overflow() is broken for
+that event.  In particular, the tests currently don't generate very
+many instruction cache misses.
+
+-----------------------
+Interrupt Stress Tests
+-----------------------
+
+  nonthread -t 60 PAPI_TOT_CYC:2000000
+  threads   -t 60 -p 4 PAPI_TOT_CYC:2000000
+  mult-events -t 60 PAPI_TOT_CYC:2000000 PAPI_L2_TCM:100000 PAPI_FP_INS:200000
+
+These are stress tests designed to test if the system can handle a
+high interrupt rate over a long period of time and produce a steady
+rate of interrupts.  Two things to look for: (1) the rate of
+interrupts per unit of work should stay fairly constant, and (2)
+interrupts should not just up and die and have their rate drop to
+zero.
+
+The system should be able to handle a very high rate of interrupts
+(eg, 10-50,000/sec) for several hours and return a steady rate of
+interrupts per unit of work per thread.  The system should also be
+able to handle an absurdly high rate of interrupts (eg,
+PAPI_TOT_CYC:5000) without falling over.  At that threshold with just
+the 'count++' overflow handler, the system should be generating well
+over 100,000 interrupts per second.  However, at some point, maybe
+PAPI_TOT_CYC:500, the system will fall over, and this is normal.
+
+Also, some Linux kernels have a bug that can result in corrupting the
+SSE registers on x86-64 systems.  If any of these tests print warning
+messages similar to:
+
+  nonthread: run_memory: sum is out of range: -4.89499e-06
+
+then the bug is in your system.  The bug is a race condition in the
+kernel that sometimes fails to save and restore the SSE registers
+correctly during an interrupt.  This is a bug in the standard Linux
+kernel, not in PAPI, although it does affect applications that use
+PAPI.
+
+The bug is not in 2.6.27 and earlier kernels.  The bug affects all
+2.6.28 kernels and 2.6.29.1 and 2.6.29.2 on x86-64 systems.  The bug
+is fixed in 2.6.29.3 and in 2.6.30 and later.  To check for the bug,
+include '-mfpmath=sse' in CFLAGS.
+
+---------------------
+Program Context Test
+---------------------
+
+  context -t 10 PAPI_TOT_CYC:2000000
+
+This test attempts to verify that PAPI_overflow() passes a correct
+program counter (PC) pointer to the overflow handler.  The program
+executes four regions of code of equal duration and the test passes if
+it receives approximately an equal number of interrupts within each
+region.
+
+--------------------
+Fork and Exec Tests
+--------------------
+
+  fork [exit|exec]
+  exec
+
+These tests verify that PAPI_overflow() is handled correctly across
+fork() and exec().  If the first argument to fork is 'exit' or 'exec',
+then the child terminates with a call to exit() or exec().  The
+default is 'exit'.
+
+On some old perfmon-based systems, if a process forks with an actively
+running PAPI_overflow, then starting PAPI in the child can interfere
+with PAPI in the parent.  Specifically, when the child exits, then
+PAPI also dies in the parent, which should not happen.  The fork test
+passes if the parent still receives interrupts after the child has
+exited.
+
+On some old perfctr-based systems, if a process execs with an actively
+running PAPI_overflow, then an attempt to launch PAPI in the child
+will fail.  The exec test passes if the child is able to launch
+PAPI_overflow() and receive interrupts.
+
+Both of these problems have been fixed for well over a year by now.
+
+--------------------
+Signal Handler Test
+--------------------
+
+  handler -x 50 PAPI_TOT_CYC:50000
+
+This test checks that the performance counters are correctly reset on
+return from the signal handler.  PAPI as of 4.1.1 on perf_events keeps
+the counters running during the handler and thus work in the handler
+is charged to the next overflow.  If this happens and the time spent
+in the handler is too long relative to the overflow threshold, then
+interrupts will stack up and the main program makes no progress.  If
+interrupts stack up too much, then the process dies on SIGIO with the
+message "I/O possible."  The unit of work for this test is an
+arbitrary number of loop iterations in the signal handler, but '-x 50'
+and 50,000 cycles is normally sufficient to trigger the bug within
+seconds.
+
+The test fails if the program prints any 'no progress' messages or
+dies with "I/O possible," otherwise it passes.  This problem only
+affects PAPI with perf_events kernels, perfmon and perfctr are
+unaffected.
+
+---------------------------
+Overhead and Throttle Test
+---------------------------
+
+  throttle PAPI_TOT_CYC
+
+This test runs a loop of flops at higher and higher interrupt rates
+and measures the amount of overhead and throttling of interrupts from
+PAPI and the kernel.  The overhead and throttling percentages are
+defined as:
+
+  event rate = (number of interrupts)(threshold)/(work)
+  overhead = 1 - (actual work)/(base work)
+  throttle = 1 - (actual event rate)/(base event rate)
+
+Work is an arbitrary unit that represents the amount of useful work
+(loop iterations) that the program does.  The base work rate is the
+amount of work per second that the program achives when run with no
+interrupts.
+
+Overhead is the percentage loss in the actual work rate compared to
+the base work rate.  For example, a program that achives 1000 units of
+work (per second) with no interrupts but only 850 units at some
+sampling rate has a 15% overhead.  That is, per one second of running
+time, 0.85 seconds are spent doing useful work and 0.15 seconds are
+spent processing interrupts.
+
+The event rate is the number of performance counter events (number of
+interrupts times threshold) per unit of work.  That is, the number of
+events triggered by one unit of work.  The base event rate is measured
+at a sampling rate of approximately 50-100 interrupts per second.
+Note that the expected number of interrupts can be computed from the
+base event rate, threshold and work.
+
+Throttling is the percentage loss in the actual event rate compared to
+the base event rate.  For example, if the expected interrupt rate is
+100,000 per second for a given threshold but the program receives only
+75,000 per second, then the throttling rate is 25%.
+
+Note: this test requires one thread to have near 100% access to one
+core for the duration of the test to calibrate the amount of work and
+number of interrupts per second.  On a heavily loaded system, the
+process will not get a steady rate of work and the results will be
+invalid.
+
+The perfmon and perfctr kernel patches do not throttle interrupts.
+However, perf_events in recent Linux kernels (2.6.34 and later) limits
+interrupts to about 100,000 per second.  This is well beyond
+reasonable sampling rates, so the throttling is not a problem.
+
